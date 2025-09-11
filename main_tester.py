@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 """
-Script abrangente para análise de ataques WEvade
+Script corrigido para análise de ataques WEvade
 Executa experimentos de repetição de ataques, combinação de ataques diferentes,
 e avaliação de performance e qualidade de imagem.
 """
@@ -15,6 +15,7 @@ from datetime import datetime
 import argparse
 from pathlib import Path
 import logging
+import re
 from concurrent.futures import ThreadPoolExecutor
 import itertools
 
@@ -38,7 +39,7 @@ class WEvadeAnalyzer:
         
         # Tipos de ataques disponíveis
         self.attack_types = {
-            'WEvade-W-II': {'script': 'main.py', 'default_args': {}},
+            'WEvade-W-II': {'script': 'main.py', 'args': {}},
             'WEvade-W-I': {'script': 'main.py', 'args': {'--WEvade-type': 'WEvade-W-I'}},
             'single-tailed': {'script': 'main.py', 'args': {'--detector-type': 'single-tailed'}},
             'binary-search': {'script': 'main.py', 'args': {'--binary-search': 'True'}},
@@ -47,10 +48,7 @@ class WEvadeAnalyzer:
         }
         
         # Configurações para análise de bits
-        self.bit_configurations = [8, 16, 32, 64]
-        
-        # Métricas a serem coletadas
-        self.metrics = ['evasion_rate', 'image_quality', 'detection_accuracy', 'runtime']
+        self.bit_configurations = [16, 30, 64]  # Ajustado para valores mais realistas
         
         # Resultados dos experimentos
         self.results = {
@@ -140,60 +138,110 @@ class WEvadeAnalyzer:
         return success, stdout, stderr
 
     def extract_metrics_from_output(self, stdout, stderr):
-        """Extrai métricas do output dos comandos"""
+        """Extrai métricas do output dos comandos com regex mais robustas"""
         metrics = {
             'evasion_rate': 0.0,
-            'image_quality': 0.0,
-            'detection_accuracy': 0.0,
-            'runtime': 0.0
+            'bit_accuracy': 0.0,
+            'perturbation': 0.0,
+            'runtime': 0.0,
+            'success': False
         }
         
         try:
-            # Parse do stdout para extrair métricas (implementação específica baseada no output real)
-            lines = stdout.split('\n')
+            # Combina stdout e stderr para busca
+            full_output = stdout + "\n" + stderr
+            lines = full_output.split('\n')
+            
             for line in lines:
-                if 'evasion rate' in line.lower() or 'success rate' in line.lower():
-                    # Tenta extrair taxa de evasão
-                    try:
-                        rate = float(line.split(':')[-1].strip().replace('%', ''))
-                        metrics['evasion_rate'] = rate / 100.0 if rate > 1 else rate
-                    except:
-                        pass
+                line = line.strip()
                 
-                elif 'psnr' in line.lower() or 'ssim' in line.lower() or 'quality' in line.lower():
-                    # Tenta extrair qualidade da imagem
-                    try:
-                        quality = float(line.split(':')[-1].strip())
-                        metrics['image_quality'] = quality
-                    except:
-                        pass
+                # Extrai taxa de evasão - padrões comuns nos scripts WEvade
+                evasion_patterns = [
+                    r'Evasion rate[=\s:]+([0-9]*\.?[0-9]+)',
+                    r'Success rate[=\s:]+([0-9]*\.?[0-9]+)',
+                    r'Evading rate.*?([0-9]*\.?[0-9]+)'
+                ]
                 
-                elif 'accuracy' in line.lower():
-                    # Tenta extrair acurácia de detecção
-                    try:
-                        acc = float(line.split(':')[-1].strip().replace('%', ''))
-                        metrics['detection_accuracy'] = acc / 100.0 if acc > 1 else acc
-                    except:
-                        pass
+                for pattern in evasion_patterns:
+                    match = re.search(pattern, line, re.IGNORECASE)
+                    if match:
+                        try:
+                            rate = float(match.group(1))
+                            # Se valor > 1, assume que está em percentual
+                            metrics['evasion_rate'] = rate / 100.0 if rate > 1 else rate
+                            metrics['success'] = True
+                            break
+                        except ValueError:
+                            continue
                 
-                elif 'time' in line.lower() or 'runtime' in line.lower():
-                    # Tenta extrair tempo de execução
-                    try:
-                        time_val = float(line.split(':')[-1].strip().replace('s', ''))
-                        metrics['runtime'] = time_val
-                    except:
-                        pass
-        
+                # Extrai bit accuracy
+                bit_patterns = [
+                    r'Average Bit_acc[=\s:]+([0-9]*\.?[0-9]+)',
+                    r'Bit.*?accuracy.*?([0-9]*\.?[0-9]+)',
+                    r'bit_acc.*?([0-9]*\.?[0-9]+)'
+                ]
+                
+                for pattern in bit_patterns:
+                    match = re.search(pattern, line, re.IGNORECASE)
+                    if match:
+                        try:
+                            metrics['bit_accuracy'] = float(match.group(1))
+                            break
+                        except ValueError:
+                            continue
+                
+                # Extrai perturbação
+                pert_patterns = [
+                    r'Average Perturbation[=\s:]+([0-9]*\.?[0-9]+)',
+                    r'perturbation.*?([0-9]*\.?[0-9]+)',
+                    r'error.*?norm.*?([0-9]*\.?[0-9]+)'
+                ]
+                
+                for pattern in pert_patterns:
+                    match = re.search(pattern, line, re.IGNORECASE)
+                    if match:
+                        try:
+                            metrics['perturbation'] = float(match.group(1))
+                            break
+                        except ValueError:
+                            continue
+                
+                # Extrai tempo de execução
+                time_patterns = [
+                    r'Time[=\s:]+([0-9]*\.?[0-9]+)',
+                    r'runtime.*?([0-9]*\.?[0-9]+)',
+                    r'elapsed.*?([0-9]*\.?[0-9]+)'
+                ]
+                
+                for pattern in time_patterns:
+                    match = re.search(pattern, line, re.IGNORECASE)
+                    if match:
+                        try:
+                            metrics['runtime'] = float(match.group(1))
+                            break
+                        except ValueError:
+                            continue
+            
+            # Se não encontrou evasion_rate mas encontrou outros valores, marca como sucesso parcial
+            if metrics['bit_accuracy'] > 0 or metrics['perturbation'] > 0:
+                metrics['success'] = True
+            
+            # Log das métricas extraídas para debug
+            logger.debug(f"Métricas extraídas: {metrics}")
+            
         except Exception as e:
             logger.warning(f"Erro ao extrair métricas: {e}")
+            # Em caso de erro, tenta extrair pelo menos alguma informação básica
+            if 'success' in stdout.lower() or 'completed' in stdout.lower():
+                metrics['success'] = True
         
         return metrics
 
-    def experiment_repeated_attacks(self, max_repetitions=5):
+    def experiment_repeated_attacks(self, max_repetitions=3):
         """Experimenta ataques repetidos"""
         logger.info("=== Experimento: Ataques Repetidos ===")
         
-        for attack_type in ['WEvade-W-II', 'WEvade-W-I', 'WEvade-B-Q']:
+        for attack_type in ['WEvade-W-II', 'WEvade-W-I']:  # Removido WEvade-B-Q por ser mais complexo
             for training_type in ['standard', 'adversarial']:
                 logger.info(f"Testando ataques repetidos: {attack_type} com treinamento {training_type}")
                 
@@ -202,20 +250,28 @@ class WEvadeAnalyzer:
                 for repetition in range(1, max_repetitions + 1):
                     logger.info(f"Repetição {repetition}/{max_repetitions}")
                     
-                    # Para ataques repetidos, pode-se modificar parâmetros como epsilon
-                    additional_args = {}
-                    if attack_type == 'WEvade-B-Q':
-                        additional_args['--num-attack'] = str(repetition * 10)
+                    # Para ataques repetidos, modifica parâmetros ligeiramente
+                    additional_args = {
+                        '--alpha': str(0.1 * repetition),  # Varia learning rate
+                        '--epsilon': str(0.01 + 0.005 * (repetition - 1))  # Varia epsilon
+                    }
                     
                     success, stdout, stderr = self.run_single_attack(attack_type, training_type, additional_args)
                     
                     if success:
                         metrics = self.extract_metrics_from_output(stdout, stderr)
                         metrics['repetition'] = repetition
+                        metrics['alpha'] = additional_args['--alpha']
+                        metrics['epsilon'] = additional_args['--epsilon']
                         attack_results.append(metrics)
-                        logger.info(f"Repetição {repetition} - Evasão: {metrics['evasion_rate']:.3f}")
+                        logger.info(f"Repetição {repetition} - Evasão: {metrics['evasion_rate']:.3f}, Bit Acc: {metrics['bit_accuracy']:.3f}")
                     else:
-                        logger.error(f"Falha na repetição {repetition}: {stderr}")
+                        logger.error(f"Falha na repetição {repetition}")
+                        # Adiciona resultado com falha para manter consistência
+                        metrics = self.extract_metrics_from_output(stdout, stderr)
+                        metrics['repetition'] = repetition
+                        metrics['success'] = False
+                        attack_results.append(metrics)
                 
                 key = f"{attack_type}_{training_type}"
                 self.results['repeated_attacks'][key] = attack_results
@@ -224,13 +280,11 @@ class WEvadeAnalyzer:
         """Experimenta combinações de diferentes ataques"""
         logger.info("=== Experimento: Ataques Combinados ===")
         
-        # Define combinações de ataques para testar
+        # Define combinações mais simples e realistas
         attack_combinations = [
             ['WEvade-W-I', 'WEvade-W-II'],
             ['WEvade-W-II', 'binary-search'],
-            ['post-processing', 'WEvade-W-I'],
-            ['WEvade-W-I', 'single-tailed'],
-            ['WEvade-W-II', 'post-processing', 'binary-search']
+            ['post-processing', 'WEvade-W-I']
         ]
         
         for training_type in ['standard', 'adversarial']:
@@ -244,28 +298,48 @@ class WEvadeAnalyzer:
                 }
                 
                 # Executa cada ataque da combinação sequencialmente
+                all_successful = True
                 for attack_type in combination:
                     success, stdout, stderr = self.run_single_attack(attack_type, training_type)
                     
-                    if success:
-                        metrics = self.extract_metrics_from_output(stdout, stderr)
-                        metrics['attack_type'] = attack_type
-                        combined_results['individual_results'].append(metrics)
-                    else:
-                        logger.error(f"Falha no ataque {attack_type}: {stderr}")
-                        break
+                    metrics = self.extract_metrics_from_output(stdout, stderr)
+                    metrics['attack_type'] = attack_type
+                    metrics['success'] = success
+                    combined_results['individual_results'].append(metrics)
+                    
+                    if not success:
+                        logger.error(f"Falha no ataque {attack_type}")
+                        all_successful = False
                 
                 # Calcula métricas finais da combinação
                 if combined_results['individual_results']:
-                    final_evasion = np.mean([r['evasion_rate'] for r in combined_results['individual_results']])
-                    final_quality = np.mean([r['image_quality'] for r in combined_results['individual_results']])
-                    total_runtime = sum([r['runtime'] for r in combined_results['individual_results']])
+                    successful_results = [r for r in combined_results['individual_results'] if r.get('success', False)]
                     
-                    combined_results['final_metrics'] = {
-                        'evasion_rate': final_evasion,
-                        'image_quality': final_quality,
-                        'runtime': total_runtime
-                    }
+                    if successful_results:
+                        final_evasion = np.mean([r['evasion_rate'] for r in successful_results])
+                        final_bit_acc = np.mean([r['bit_accuracy'] for r in successful_results])
+                        final_pert = np.mean([r['perturbation'] for r in successful_results])
+                        total_runtime = sum([r['runtime'] for r in combined_results['individual_results']])
+                        
+                        combined_results['final_metrics'] = {
+                            'evasion_rate': final_evasion,
+                            'bit_accuracy': final_bit_acc,
+                            'perturbation': final_pert,
+                            'runtime': total_runtime,
+                            'success': all_successful,
+                            'successful_attacks': len(successful_results),
+                            'total_attacks': len(combination)
+                        }
+                    else:
+                        combined_results['final_metrics'] = {
+                            'evasion_rate': 0.0,
+                            'bit_accuracy': 0.0,
+                            'perturbation': 0.0,
+                            'runtime': sum([r['runtime'] for r in combined_results['individual_results']]),
+                            'success': False,
+                            'successful_attacks': 0,
+                            'total_attacks': len(combination)
+                        }
                 
                 key = f"{'+'.join(combination)}_{training_type}"
                 self.results['combined_attacks'][key] = combined_results
@@ -277,81 +351,134 @@ class WEvadeAnalyzer:
         for bits in self.bit_configurations:
             logger.info(f"Testando configuração de {bits} bits")
             
-            for attack_type in ['WEvade-W-II', 'WEvade-B-Q']:
+            for attack_type in ['WEvade-W-II']:  # Foca apenas no ataque principal
                 for training_type in ['standard', 'adversarial']:
                     
-                    # Adiciona parâmetro de bits se suportado pelo ataque
-                    additional_args = {}
-                    if attack_type == 'WEvade-B-Q':
-                        additional_args['--bits'] = str(bits)
+                    # Adiciona parâmetro de bits
+                    additional_args = {
+                        '--watermark-length': str(bits)
+                    }
                     
                     success, stdout, stderr = self.run_single_attack(attack_type, training_type, additional_args)
                     
-                    if success:
-                        metrics = self.extract_metrics_from_output(stdout, stderr)
-                        metrics['bits'] = bits
-                        
-                        key = f"{attack_type}_{training_type}"
-                        if key not in self.results['bit_analysis']:
-                            self.results['bit_analysis'][key] = []
-                        
-                        self.results['bit_analysis'][key].append(metrics)
-                        logger.info(f"{bits} bits - Evasão: {metrics['evasion_rate']:.3f}")
-                    else:
-                        logger.error(f"Falha com {bits} bits: {stderr}")
+                    metrics = self.extract_metrics_from_output(stdout, stderr)
+                    metrics['bits'] = bits
+                    metrics['success'] = success
+                    
+                    key = f"{attack_type}_{training_type}"
+                    if key not in self.results['bit_analysis']:
+                        self.results['bit_analysis'][key] = []
+                    
+                    self.results['bit_analysis'][key].append(metrics)
+                    logger.info(f"{bits} bits - Evasão: {metrics['evasion_rate']:.3f}, Bit Acc: {metrics['bit_accuracy']:.3f}")
 
     def generate_line_plots(self):
         """Gera gráficos de linha para análise"""
         logger.info("=== Gerando Gráficos de Linha ===")
         
         # Gráfico 1: Métrica vs # ataque repetido
-        plt.figure(figsize=(12, 8))
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
         
         for key, results in self.results['repeated_attacks'].items():
             if results:
-                repetitions = [r['repetition'] for r in results]
-                evasion_rates = [r['evasion_rate'] for r in results]
-                plt.plot(repetitions, evasion_rates, marker='o', label=key)
+                repetitions = [r['repetition'] for r in results if r.get('success', False)]
+                evasion_rates = [r['evasion_rate'] for r in results if r.get('success', False)]
+                bit_accuracies = [r['bit_accuracy'] for r in results if r.get('success', False)]
+                
+                if repetitions:  # Só plota se houver dados válidos
+                    ax1.plot(repetitions, evasion_rates, marker='o', label=key)
+                    ax2.plot(repetitions, bit_accuracies, marker='s', label=key)
         
-        plt.xlabel('Número de Repetições')
-        plt.ylabel('Taxa de Evasão')
-        plt.title('Taxa de Evasão vs Número de Ataques Repetidos')
-        plt.legend()
-        plt.grid(True)
-        plt.savefig(self.results_dir / 'repeated_attacks_evasion.png', dpi=300, bbox_inches='tight')
+        ax1.set_xlabel('Número de Repetições')
+        ax1.set_ylabel('Taxa de Evasão')
+        ax1.set_title('Taxa de Evasão vs Número de Ataques Repetidos')
+        ax1.legend()
+        ax1.grid(True)
+        
+        ax2.set_xlabel('Número de Repetições')
+        ax2.set_ylabel('Bit Accuracy')
+        ax2.set_title('Bit Accuracy vs Número de Ataques Repetidos')
+        ax2.legend()
+        ax2.grid(True)
+        
+        plt.tight_layout()
+        plt.savefig(self.results_dir / 'repeated_attacks_analysis.png', dpi=300, bbox_inches='tight')
         plt.close()
         
         # Gráfico 2: Métrica vs Configuração de Bits
-        plt.figure(figsize=(12, 8))
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
         
         for key, results in self.results['bit_analysis'].items():
             if results:
-                bits_config = [r['bits'] for r in results]
-                evasion_rates = [r['evasion_rate'] for r in results]
-                plt.plot(bits_config, evasion_rates, marker='s', label=key)
+                successful_results = [r for r in results if r.get('success', False)]
+                if successful_results:
+                    bits_config = [r['bits'] for r in successful_results]
+                    evasion_rates = [r['evasion_rate'] for r in successful_results]
+                    bit_accuracies = [r['bit_accuracy'] for r in successful_results]
+                    
+                    ax1.plot(bits_config, evasion_rates, marker='o', label=key)
+                    ax2.plot(bits_config, bit_accuracies, marker='s', label=key)
         
-        plt.xlabel('Configuração de Bits')
-        plt.ylabel('Taxa de Evasão')
-        plt.title('Taxa de Evasão vs Configuração de Bits')
-        plt.legend()
-        plt.grid(True)
-        plt.savefig(self.results_dir / 'bit_analysis_evasion.png', dpi=300, bbox_inches='tight')
+        ax1.set_xlabel('Configuração de Bits')
+        ax1.set_ylabel('Taxa de Evasão')
+        ax1.set_title('Taxa de Evasão vs Configuração de Bits')
+        ax1.legend()
+        ax1.grid(True)
+        
+        ax2.set_xlabel('Configuração de Bits')
+        ax2.set_ylabel('Bit Accuracy')
+        ax2.set_title('Bit Accuracy vs Configuração de Bits')
+        ax2.legend()
+        ax2.grid(True)
+        
+        plt.tight_layout()
+        plt.savefig(self.results_dir / 'bit_analysis_plots.png', dpi=300, bbox_inches='tight')
         plt.close()
 
     def generate_tables(self):
         """Gera tabelas com resultados das combinações"""
         logger.info("=== Gerando Tabelas de Resultados ===")
         
+        # Tabela de ataques repetidos
+        repeated_data = []
+        for key, results in self.results['repeated_attacks'].items():
+            for result in results:
+                if result.get('success', False):
+                    attack_type, training = key.split('_', 1)
+                    row = {
+                        'Ataque': attack_type,
+                        'Treinamento': training,
+                        'Repetição': result['repetition'],
+                        'Taxa Evasão': f"{result['evasion_rate']:.4f}",
+                        'Bit Accuracy': f"{result['bit_accuracy']:.4f}",
+                        'Perturbação': f"{result['perturbation']:.4f}",
+                        'Tempo (s)': f"{result['runtime']:.2f}",
+                        'Alpha': result.get('alpha', 'N/A'),
+                        'Epsilon': result.get('epsilon', 'N/A')
+                    }
+                    repeated_data.append(row)
+        
+        if repeated_data:
+            df_repeated = pd.DataFrame(repeated_data)
+            df_repeated.to_csv(self.results_dir / 'repeated_attacks_results.csv', index=False)
+            logger.info("Tabela de ataques repetidos salva")
+        
         # Tabela de ataques combinados
         combined_data = []
         for key, results in self.results['combined_attacks'].items():
             if 'final_metrics' in results and results['final_metrics']:
+                training = key.split('_')[-1]
+                combination_name = '_'.join(key.split('_')[:-1])
+                
                 row = {
                     'Combinação': ' + '.join(results['combination']),
-                    'Treinamento': key.split('_')[-1],
-                    'Taxa Evasão': f"{results['final_metrics']['evasion_rate']:.3f}",
-                    'Qualidade Imagem': f"{results['final_metrics']['image_quality']:.3f}",
-                    'Tempo (s)': f"{results['final_metrics']['runtime']:.2f}"
+                    'Treinamento': training,
+                    'Taxa Evasão': f"{results['final_metrics']['evasion_rate']:.4f}",
+                    'Bit Accuracy': f"{results['final_metrics']['bit_accuracy']:.4f}",
+                    'Perturbação': f"{results['final_metrics']['perturbation']:.4f}",
+                    'Tempo Total (s)': f"{results['final_metrics']['runtime']:.2f}",
+                    'Ataques Bem-sucedidos': f"{results['final_metrics']['successful_attacks']}/{results['final_metrics']['total_attacks']}",
+                    'Sucesso Geral': 'Sim' if results['final_metrics']['success'] else 'Não'
                 }
                 combined_data.append(row)
         
@@ -364,14 +491,18 @@ class WEvadeAnalyzer:
         bit_data = []
         for key, results in self.results['bit_analysis'].items():
             for result in results:
-                row = {
-                    'Ataque': key.split('_')[0],
-                    'Treinamento': key.split('_')[1],
-                    'Bits': result['bits'],
-                    'Taxa Evasão': f"{result['evasion_rate']:.3f}",
-                    'Qualidade Imagem': f"{result['image_quality']:.3f}"
-                }
-                bit_data.append(row)
+                if result.get('success', False):
+                    attack_type, training = key.split('_', 1)
+                    row = {
+                        'Ataque': attack_type,
+                        'Treinamento': training,
+                        'Bits': result['bits'],
+                        'Taxa Evasão': f"{result['evasion_rate']:.4f}",
+                        'Bit Accuracy': f"{result['bit_accuracy']:.4f}",
+                        'Perturbação': f"{result['perturbation']:.4f}",
+                        'Tempo (s)': f"{result['runtime']:.2f}"
+                    }
+                    bit_data.append(row)
         
         if bit_data:
             df_bits = pd.DataFrame(bit_data)
@@ -418,18 +549,22 @@ def main():
     parser = argparse.ArgumentParser(description='WEvade Comprehensive Attack Analysis')
     parser.add_argument('--base-path', default='.', help='Caminho base do projeto WEvade')
     parser.add_argument('--results-dir', default='results', help='Diretório para salvar resultados')
-    parser.add_argument('--max-repetitions', type=int, default=5, help='Número máximo de repetições de ataque')
+    parser.add_argument('--max-repetitions', type=int, default=3, help='Número máximo de repetições de ataque')
     
     args = parser.parse_args()
     
     # Verifica se os arquivos necessários existem
     base_path = Path(args.base_path)
-    required_files = ['main.py', 'existing_post_processing.py', 'encode_watermarked_images.py', 'main_WEvade_B_Q.py']
+    required_files = ['main.py', 'existing_post_processing.py', 'encode_watermarked_images.py']
     
+    missing_files = []
     for file in required_files:
         if not (base_path / file).exists():
-            logger.error(f"Arquivo necessário não encontrado: {file}")
-            return 1
+            missing_files.append(file)
+    
+    if missing_files:
+        logger.error(f"Arquivos necessários não encontrados: {missing_files}")
+        return 1
     
     # Executa análise
     analyzer = WEvadeAnalyzer(args.base_path, args.results_dir)
