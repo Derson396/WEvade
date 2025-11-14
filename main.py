@@ -5,7 +5,7 @@ import time
 from tqdm import tqdm
 
 from utils import get_data_loaders, transform_image, AverageMeter
-from model.model import Model
+from model.robust_model import RobustModel
 from WEvade import WEvade_W, WEvade_W_binary_search_r
 
 
@@ -36,7 +36,7 @@ def main():
     args = parser.parse_args()
 
     # Load model.
-    model = Model(args.image_size, args.watermark_length, device)
+    model = RobustModel(args.image_size, args.watermark_length, device)
     checkpoint = torch.load(args.checkpoint)
     model.encoder.load_state_dict(checkpoint['enc-model'])
     model.decoder.load_state_dict(checkpoint['dec-model'])
